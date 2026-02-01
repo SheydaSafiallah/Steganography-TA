@@ -9,7 +9,6 @@
 5. [Lossless vs Lossy Images](#lossless-vs-lossy-images)
 6. [Randomized LSB](#randomized-lsb)
 7. [Adaptive LSB](#adaptive-lsb)
-8. [LSB Matching (±1 Embedding)](#lsb-matching-±1-embedding)
 
 
 
@@ -342,7 +341,7 @@ Basic LSB is easy to detect because:
 
 To make LSB harder to detect, we use *Adaptive LSB*.
 
-## Adaptive LSB
+# Adaptive LSB
 
 
 Instead of embedding bits uniformly across the whole image,
