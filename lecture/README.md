@@ -274,7 +274,7 @@ Randomized LSB:
 
 Linear Congruential Generator formula:
 
-### *Xₙ₊₁ = (aXₙ + c) mod m*
+ ***Xₙ₊₁ = (aXₙ + c) mod m***
 
 > **Important Concept:** 
 These numbers are not random.
