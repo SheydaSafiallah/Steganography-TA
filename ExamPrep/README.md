@@ -13,8 +13,9 @@ Covers: [Lecture0](../Lecture0/README.md) (prerequisites), [Lecture1](../Lecture
 3. [Question Bank: Lecture 2 (DCT)](#question-bank-lecture-2-dct)
 4. [Question Bank: Lecture 3 (Steganalysis)](#question-bank-lecture-3-steganalysis)
 5. [Question Bank: Cross-Topic / Integrative](#question-bank-cross-topic--integrative)
-6. [Mock Final Exam](#mock-final-exam)
-7. [Mock Final Exam — Answer Key](#mock-final-exam--answer-key)
+6. [Question Bank: Practical / Hands-On](#question-bank-practical--hands-on)
+7. [Mock Final Exam](#mock-final-exam)
+8. [Mock Final Exam — Answer Key](#mock-final-exam--answer-key)
 
 ---
 
@@ -171,6 +172,156 @@ Covers: [Lecture0](../Lecture0/README.md) (prerequisites), [Lecture1](../Lecture
 **Q4.** Explain, using concepts from at least two different lectures, why OutGuess having lower capacity than JSteg is a deliberate design tradeoff rather than a flaw.
 
 *Answer:* From Lecture 2: OutGuess reserves roughly half its usable coefficients for a correction phase that repairs the first-order histogram after embedding. From Lecture 3: this repair is specifically what defeats the chi-square attack, which JSteg fails. The capacity loss isn't accidental — it's the direct cost of buying statistical security. This mirrors the same tradeoff in Lecture 1, where Randomized/Adaptive LSB also sacrifice some capacity (skipped positions/regions) for the same reason: security against detection costs usable bits.
+
+---
+
+# Question Bank: Practical / Hands-On
+
+These are implementation-style questions: write code, find a bug, or predict a program's output. This is the kind of question a lab exam or take-home practical typically uses, as opposed to the pen-and-paper questions above.
+
+**P1. Implement extraction.** You're given this embedding function. Write the matching `extract_message(image_path, length)` function that recovers the original text.
+
+```python
+from PIL import Image
+
+def embed_message(image_path, message, output_path):
+    img = Image.open(image_path).convert('RGB')
+    pixels = img.load()
+    bits = ''.join(format(ord(c), '08b') for c in message)
+
+    idx = 0
+    for y in range(img.height):
+        for x in range(img.width):
+            if idx >= len(bits):
+                img.save(output_path)
+                return
+            r, g, b = pixels[x, y]
+            r = (r & ~1) | int(bits[idx]); idx += 1
+            pixels[x, y] = (r, g, b)
+    img.save(output_path)
+```
+
+*Answer:*
+
+```python
+def extract_message(image_path, length):
+    img = Image.open(image_path).convert('RGB')
+    pixels = img.load()
+    num_bits = length * 8
+    bits = ''
+
+    for y in range(img.height):
+        for x in range(img.width):
+            if len(bits) >= num_bits:
+                break
+            r, g, b = pixels[x, y]
+            bits += str(r & 1)
+        if len(bits) >= num_bits:
+            break
+
+    chars = [bits[i:i+8] for i in range(0, len(bits), 8)]
+    return ''.join(chr(int(c, 2)) for c in chars)
+```
+
+Key points graders look for: only the Red channel was used during embedding (matches the embed function), the loop order (y outer, x inner) must match, and `length` (in characters) must be converted to `length * 8` bits.
+
+**P2. Find the bug.** This code is supposed to embed a bit into a pixel's LSB, but it has a bug. Identify it and fix it.
+
+```python
+def set_lsb(pixel, bit):
+    return pixel & bit
+```
+
+*Answer:* The bug: `&` (AND) can only ever *clear* bits, never set one to 1 — e.g. `set_lsb(200, 1)` gives `200 & 1 = 0`, which is wrong (200 is a full pixel value, not a single bit). The correct implementation must first *clear* the LSB, then *set* it:
+
+```python
+def set_lsb(pixel, bit):
+    return (pixel & ~1) | bit
+```
+
+**P3. Predict the output.** What does this program print? Work through it by hand before running it.
+
+```python
+value = 214
+value = value ^ 1
+value = value ^ 1
+value = value & ~1
+print(value)
+```
+
+*Answer:* `214 = 11010110`. First XOR flips LSB: `11010111` = 215. Second XOR flips it back: `11010110` = 214. `& ~1` clears the LSB (already 0): stays `214`. **Output: `214`**.
+
+**P4. Capacity check function.** Write a function `can_fit(image_path, message)` that returns `True` if a message (ASCII string) can be embedded in an image using 1-bit sequential LSB across all RGB channels, accounting for an 8-bit null terminator, and `False` otherwise.
+
+*Answer:*
+
+```python
+from PIL import Image
+
+def can_fit(image_path, message):
+    img = Image.open(image_path).convert('RGB')
+    capacity_bits = img.width * img.height * 3
+    needed_bits = (len(message) + 1) * 8  # +1 char for null terminator
+    return needed_bits <= capacity_bits
+```
+
+**P5. Implement a basic chi-square check.** Given a grayscale NumPy image array, write a function that returns the chi-square statistic for the first `num_pairs` value-pairs (0,1), (2,3), … using the formula from Lecture 3.
+
+*Answer:* (This is the same function taught in Lecture 3 — reproducing it correctly from memory is the point of this question.)
+
+```python
+import numpy as np
+
+def chi_square_stat(image_array, num_pairs=128):
+    hist, _ = np.histogram(image_array.flatten(), bins=256, range=(0, 256))
+    chi_sq = 0.0
+    for k in range(num_pairs):
+        h0, h1 = hist[2 * k], hist[2 * k + 1]
+        h_avg = (h0 + h1) / 2
+        if h_avg == 0:
+            continue
+        chi_sq += ((h0 - h_avg) ** 2) / h_avg
+    return chi_sq
+```
+
+**P6. Debug an F5-style function.** This function is meant to move a mismatched coefficient toward zero, but it violates one of F5's rules from Lecture 2 for a specific input. Find the bug.
+
+```python
+def f5_adjust(coeff, target_bit):
+    current_bit = abs(coeff) & 1
+    if current_bit != target_bit:
+        coeff = coeff - 1 if coeff > 0 else coeff + 1
+    return coeff
+```
+
+*Answer:* The bug is a **missing zero-coefficient check**. Per Lecture 2, F5 must always skip coefficients equal to `0` — they are never valid embedding positions. But this function has no `if coeff == 0: return coeff` guard, so calling `f5_adjust(0, 1)` computes `current_bit = abs(0) & 1 = 0`, sees a mismatch against `target_bit = 1`, and — since `coeff > 0` is `False` for `0` — falls into the `else` branch and returns `0 + 1 = 1`. This silently manufactures a "changed" coefficient out of a position that should have been skipped entirely, corrupting the assumption both the embedder and extractor rely on. Correct version adds the guard at the top:
+
+```python
+def f5_adjust(coeff, target_bit):
+    if coeff == 0:
+        return coeff  # zero coefficients are never touched
+    current_bit = abs(coeff) & 1
+    if current_bit != target_bit:
+        coeff = coeff - 1 if coeff > 0 else coeff + 1
+    return coeff
+```
+
+**P7. Given data, run the extraction by hand.** A 2x2 grayscale image has pixel values (row-major): `150, 151, 200, 201`. These were embedded with sequential 1-bit LSB. What 4-bit message was hidden?
+
+*Answer:* Read the LSB of each pixel in order: `150 & 1 = 0`, `151 & 1 = 1`, `200 & 1 = 0`, `201 & 1 = 1`. Message bits: **`0101`**.
+
+**P8. Write a short script** that opens an image, embeds the text `"TEST"`, saves it, then immediately re-opens the saved file and extracts the message back out, printing whether it matches the original. What is the one line of code most likely to be missing or wrong if this round-trip silently fails despite otherwise-correct embed/extract logic?
+
+*Answer:*
+
+```python
+img.save(output_path)          # <- must be a lossless format (e.g. "stego.png"),
+                                #    NOT "stego.jpg" — saving as JPEG re-compresses
+                                #    the image and destroys the embedded LSBs even
+                                #    though the embed/extract code itself is correct.
+```
+
+The most common silent-failure cause in this exact scenario (from Lecture 1) is saving/re-opening through a lossy format by mistake — the round-trip test is often used specifically to catch this bug, since embed and extract can each look individually correct while the save step quietly breaks everything between them.
 
 ---
 
