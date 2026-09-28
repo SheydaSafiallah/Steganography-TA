@@ -290,3 +290,164 @@ It relies on:
 ## F5 (DCT-Based Steganography)
 
 
+F5 was designed to fix the exact weakness that kills JSteg: the statistical fingerprint left in the DCT histogram. It introduces two key ideas — **matrix encoding** and **subtraction instead of LSB replacement**.
+
+### Why JSteg Fails (Recap)
+
+JSteg overwrites the LSB of a coefficient. That forces even/odd pairs to equalize, producing a tell-tale flattening in the coefficient histogram. Chi-square attacks detect this instantly.
+
+F5 avoids this in two ways.
+
+### Idea 1: Decrement, Don't Overwrite
+
+Instead of *setting* the LSB, F5 changes the LSB by **decreasing the absolute value** of the coefficient toward zero when a change is needed.
+
+| Coefficient | Want to embed | JSteg action | F5 action |
+|-------------|---------------|--------------|-----------|
+| +5 (LSB=1)  | 0             | force to +4  | subtract 1 → +4 |
+| −5 (LSB=1)  | 0             | force to −4  | add 1 → −4 |
+
+Rules:
+
+- Skip the DC coefficient.
+- Skip coefficients equal to 0.
+- The LSB of a coefficient carries the message bit, where the "bit" of a coefficient is `|coeff| mod 2`.
+- If the bit already matches, do nothing.
+- If it does not match, move the coefficient one step **toward zero** (positive → −1, negative → +1).
+
+### Idea 2: Shrinkage
+
+When a coefficient with value ±1 is decremented, it becomes 0. A 0 is skipped on extraction, so that bit is *lost*. This event is called **shrinkage**. F5 handles it by **re-embedding** the same bit into the next usable coefficient. This is why F5's histogram does not equalize the way JSteg's does — the change is directional (toward zero), matching the natural shape of the DCT histogram.
+
+### Idea 3: Matrix Encoding
+
+This is F5's efficiency trick. Instead of changing one coefficient per bit, matrix encoding lets you embed *k* bits by changing **at most one** coefficient out of a group of `2^k − 1`.
+
+Example with `k = 2` (group of 3 coefficients):
+
+- You want to embed 2 bits.
+- You compute a hash of the current LSBs of the 3 coefficients.
+- With high probability you only need to flip **one** coefficient (or none) to make the hash equal your 2 message bits.
+
+Fewer changes → less distortion → far harder to detect. The notation is written as (1, n, k): change at most **1** bit among **n = 2^k − 1** coefficients to embed **k** bits.
+
+### Matrix Encoding — Worked Example (1, 3, 2)
+
+Say three coefficient LSBs are `x1=1, x2=0, x3=1` and you want to embed message bits `m1=1, m2=0`.
+
+Compute:
+
+```
+s1 = x1 XOR x3
+s2 = x2 XOR x3
+```
+
+So `s1 = 1 XOR 1 = 0`, `s2 = 0 XOR 1 = 1`.
+
+Compare to the message `(m1, m2) = (1, 0)`:
+
+```
+d1 = s1 XOR m1 = 0 XOR 1 = 1
+d2 = s2 XOR m2 = 1 XOR 0 = 1
+```
+
+The pair `(d1, d2) = (1, 1)` tells you **which single coefficient to change** (here, position 3). Flip that one coefficient's LSB and both message bits are now recoverable. One change encoded two bits.
+
+### F5-Style Embedding (Simplified)
+
+```python
+def embed_f5(dct_coeffs, message_bits):
+    flat = dct_coeffs.flatten()
+    bit_index = 0
+
+    for i in range(len(flat)):
+        if bit_index >= len(message_bits):
+            break
+
+        coeff = int(flat[i])
+
+        # Skip DC (handled outside) and zeros
+        if coeff == 0:
+            continue
+
+        target_bit = int(message_bits[bit_index])
+        current_bit = abs(coeff) & 1
+
+        if current_bit == target_bit:
+            bit_index += 1          # already correct
+            continue
+
+        # Move TOWARD zero
+        if coeff > 0:
+            coeff -= 1
+        else:
+            coeff += 1
+
+        # Shrinkage: became 0 -> bit is lost, re-embed later
+        if coeff == 0:
+            flat[i] = coeff
+            continue                # do NOT advance bit_index
+
+        flat[i] = coeff
+        bit_index += 1
+
+    return flat.reshape(dct_coeffs.shape)
+```
+
+### F5 Extraction (Simplified)
+
+```python
+def extract_f5(dct_coeffs, message_length):
+    flat = dct_coeffs.flatten()
+    bits = ""
+
+    for coeff in flat:
+        coeff = int(coeff)
+        if coeff == 0:              # skip zeros (shrinkage-safe)
+            continue
+
+        bits += str(abs(coeff) & 1)
+
+        if len(bits) >= message_length * 8:
+            break
+
+    return bits
+```
+
+### F5 vs JSteg Summary
+
+| Property | JSteg | F5 |
+|----------|-------|----|
+| Change type | LSB overwrite | decrement toward zero |
+| Histogram effect | equalizes pairs (detectable) | preserves shape |
+| Efficiency | 1 change per bit | matrix encoding (≪ 1 change per bit) |
+| Chi-square attack | fails | resists |
+
+F5 is much stronger than JSteg, but modern ML-based steganalysis (SRM features, deep CNNs) can still detect it. It is a milestone, not a final answer.
+
+## OutGuess (DCT-Based Steganography)
+
+OutGuess takes a different route to defeating statistical detection: **histogram preservation**.
+
+### Core Idea
+
+OutGuess embeds in two phases:
+
+1. **Embedding phase** — hide the message in the LSBs of selected DCT coefficients (skipping 0 and 1, like JSteg), chosen pseudo-randomly using a key.
+2. **Correction phase** — deliberately modify *other, unused* coefficients so that the **overall coefficient histogram matches the original** as closely as possible.
+
+The insight: JSteg is caught because embedding changes the histogram. If you *repair* the histogram afterward, the chi-square attack sees a normal-looking distribution.
+
+### Why the Correction Step Matters
+
+- Embedding might increase the count of some values and decrease others.
+- The correction phase swaps a matching number of *unused* coefficients in the opposite direction.
+- Net effect: the first-order histogram is (approximately) restored.
+
+### Trade-off
+
+Preserving the histogram costs capacity — roughly half the usable coefficients are reserved for corrections rather than data. So OutGuess hides **less** than JSteg for the same image, in exchange for resisting first-order statistical attacks.
+
+### OutGuess Limitation
+
+OutGuess preserves the *first-order* histogram but not higher-order statistics (relationships between neighboring blocks/coefficients). Later steganalysis exploits exactly those higher-order dependencies, so OutGuess — like JSteg and F5 — is detectable by modern methods.
