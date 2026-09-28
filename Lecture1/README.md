@@ -5,10 +5,13 @@
 1. [Introduction](#introduction)
 2. [Basic Concept](#basic-concept)
 3. [How LSB Works Step-by-Step](#how-lsb-works-step-by-step)
-4. [Variants of LSB Steganography](#variants-of-lsb-steganography)
-5. [Lossless vs Lossy Images](#lossless-vs-lossy-images)
-6. [Randomized LSB](#randomized-lsb)
-7. [Adaptive LSB](#adaptive-lsb)
+4. [Basic LSB in Python (Embed & Extract)](#basic-lsb-in-python-embed--extract)
+5. [Capacity: How Much Can You Hide?](#capacity-how-much-can-you-hide)
+6. [Variants of LSB Steganography](#variants-of-lsb-steganography)
+7. [Lossless vs Lossy Images](#lossless-vs-lossy-images)
+8. [Randomized LSB](#randomized-lsb)
+9. [Adaptive LSB](#adaptive-lsb)
+10. [Practice Questions](#practice-questions)
 
 
 
@@ -105,6 +108,96 @@ Stego Pixel:
 
 
 > Human eye sees almost no difference.
+
+# Basic LSB in Python (Embed & Extract)
+
+This is a minimal, runnable implementation of the steps above, using a lossless image (PNG). Try it yourself on any PNG file.
+
+```python
+from PIL import Image
+
+def text_to_bits(text):
+    return ''.join(format(ord(c), '08b') for c in text) + '00000000'  # null terminator
+
+def bits_to_text(bits):
+    chars = [bits[i:i+8] for i in range(0, len(bits), 8)]
+    message = ''
+    for byte in chars:
+        if byte == '00000000':
+            break
+        message += chr(int(byte, 2))
+    return message
+
+def embed(image_path, message, output_path):
+    img = Image.open(image_path).convert('RGB')
+    pixels = img.load()
+    bits = text_to_bits(message)
+
+    bit_index = 0
+    for y in range(img.height):
+        for x in range(img.width):
+            if bit_index >= len(bits):
+                break
+            r, g, b = pixels[x, y]
+            if bit_index < len(bits):
+                r = (r & ~1) | int(bits[bit_index]); bit_index += 1
+            if bit_index < len(bits):
+                g = (g & ~1) | int(bits[bit_index]); bit_index += 1
+            if bit_index < len(bits):
+                b = (b & ~1) | int(bits[bit_index]); bit_index += 1
+            pixels[x, y] = (r, g, b)
+        if bit_index >= len(bits):
+            break
+
+    img.save(output_path)  # must be lossless (PNG), see "Lossless vs Lossy Images"
+
+def extract(image_path):
+    img = Image.open(image_path).convert('RGB')
+    pixels = img.load()
+    bits = ''
+
+    for y in range(img.height):
+        for x in range(img.width):
+            r, g, b = pixels[x, y]
+            bits += str(r & 1) + str(g & 1) + str(b & 1)
+
+    return bits_to_text(bits)
+
+
+# ===== Example Usage ===== #
+embed("cover.png", "Hi", "stego.png")
+print(extract("stego.png"))  # -> "Hi"
+```
+
+Notes on this implementation:
+
+- Bits are written sequentially, channel by channel, pixel by pixel — this is the "basic/sequential LSB" from the table below, which is why it's vulnerable to the chi-square and RS attacks covered in Lecture 3.
+- A null terminator (`00000000`) marks the end of the message so extraction knows when to stop; real tools usually store the message *length* in the first few bytes instead.
+- Saving as PNG is essential. Saving as JPEG would destroy the hidden bits (see [Lossless vs Lossy Images](#lossless-vs-lossy-images)).
+
+# Capacity: How Much Can You Hide?
+
+With 1-bit LSB embedding, each color channel of each pixel stores exactly **1 bit**.
+
+```
+capacity (bits) = width × height × channels
+capacity (bytes) = capacity (bits) / 8
+```
+
+**Example:** A 1920×1080 RGB image:
+
+```
+1920 × 1080 × 3 = 6,220,800 bits
+6,220,800 / 8 = 777,600 bytes ≈ 759 KB
+```
+
+That's enough to hide a small text file, but not another photo of similar size. A few things that change this number in practice:
+
+- **LSB2 / multi-bit** (see table below) roughly doubles or triples capacity per bit used, at the cost of more visible distortion.
+- **Randomized** and **Adaptive LSB** *reduce* usable capacity, since they skip many pixels (unsuitable positions, smooth regions) to stay undetectable — capacity is traded for security.
+- Grayscale images have only 1 channel, so capacity is 1/3 that of an equivalent RGB image.
+
+> **Rule of thumb:** never fill 100% of capacity in practice. Using only a fraction of the available bits keeps statistical distortion low and leaves room for error-correction or headers (length, checksum).
 
 # Variants of LSB Steganography
 
@@ -497,3 +590,57 @@ def lsb_match(pixel, bit):
         return pixel + random.choice([-1, 1])
 
 ```
+
+# Practice Questions
+
+**1. A pixel's Blue channel is `11001100`. You want to embed the bit `1`. What is the new value, in binary and decimal?**
+
+<details>
+<summary>Answer</summary>
+
+The LSB (rightmost bit) is `0`. Since the message bit is `1`, flip it: `11001101` = 205 decimal (was `11001100` = 204).
+</details>
+
+**2. Why does LSB steganography require a lossless format like PNG or BMP instead of JPEG?**
+
+<details>
+<summary>Answer</summary>
+
+JPEG compression mathematically approximates pixel values to shrink file size, which overwrites the exact LSBs you embedded. On decompression the hidden bits are gone or scrambled, so extraction fails. Lossless formats guarantee the exact bytes you saved are the exact bytes you read back.
+</details>
+
+**3. You have a 800×600 grayscale image. Using 1-bit LSB, how many ASCII characters can you hide at most?**
+
+<details>
+<summary>Answer</summary>
+
+Grayscale = 1 channel per pixel.
+
+`800 × 600 × 1 = 480,000 bits = 60,000 bytes`
+
+Each ASCII character is 1 byte (8 bits), so up to 60,000 characters (minus a few bytes for length/terminator overhead).
+</details>
+
+**4. Two images look identical to the human eye. One is a stego image using basic sequential LSB, the other is clean. Name one method from this lecture (or Lecture 3) that could tell them apart, and briefly explain why.**
+
+<details>
+<summary>Answer</summary>
+
+Any of: (a) inspect the LSB plane visually — sequential embedding often leaves visible structure where random pixel noise would not; (b) a chi-square attack (Lecture 3) — sequential LSB replacement equalizes pairs of values (2k, 2k+1), which a clean image's histogram typically does not show.
+</details>
+
+**5. Why does Randomized LSB have *lower* capacity than basic sequential LSB, even though it uses the same 1-bit-per-channel embedding rule?**
+
+<details>
+<summary>Answer</summary>
+
+Randomized LSB does still embed 1 bit per selected position, but the whole point of using a key-driven pseudo-random order is often combined with skipping some positions (or, in Adaptive LSB, restricting to edge/textured regions) to reduce detectability — so fewer of the theoretically available bit-slots are actually used, trading capacity for security.
+</details>
+
+**6. In LSB Matching (±1 embedding), why is a pixel value of `0` or `255` a special case?**
+
+<details>
+<summary>Answer</summary>
+
+LSB matching may need to move a mismatched pixel by −1 or +1. A pixel at `0` cannot go to −1 (out of the valid 0–255 range), so it must move to `+1`. Similarly, a pixel at `255` cannot go to `256`, so it must move to `254`. These boundary values remove the "random choice" of direction, which the code example handles explicitly.
+</details>

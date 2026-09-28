@@ -1,5 +1,16 @@
 # Lecture2: Discrete Cosine Transform (DCT) in Steganograohy
 
+## Table of Contents
+1. [Basic Concept](#basic-concept)
+2. [DCT in Steganography](#dct-in-steganography)
+3. [JSteg (DCT-Based Steganography)](#jsteg-dct-based-steganography)
+4. [Capacity in DCT-Domain Steganography](#capacity-in-dct-domain-steganography)
+5. [Fundamental Problem of JSteg](#fundamental-problem-of-jsteg)
+6. [F5 (DCT-Based Steganography)](#f5-dct-based-steganography)
+7. [OutGuess (DCT-Based Steganography)](#outguess-dct-based-steganography)
+8. [Lecture Summary](#lecture-summary)
+9. [Practice Questions](#practice-questions)
+
 ## Basic Concept
 
 In digital image processing, we often need to:
@@ -262,6 +273,36 @@ def extract_jsteg(dct_coeffs, message_length):
 
 ```
 
+## Capacity in DCT-Domain Steganography
+
+Unlike raw-pixel LSB (Lecture 1), not every DCT coefficient is usable. Recall the skip rules: no DC coefficient, no zero coefficients, no ±1 coefficients (for JSteg/F5).
+
+```
+usable coefficients per 8x8 block = 63 (AC only) − (zero coefficients) − (±1 coefficients)
+capacity (bits) ≈ usable coefficients across all blocks
+```
+
+**Example:** A 512×512 grayscale JPEG has:
+
+```
+512 / 8 = 64 blocks per side → 64 × 64 = 4,096 blocks total
+4,096 blocks × 63 AC coefficients = 258,048 AC coefficients
+```
+
+Because of the **energy compaction property**, most AC coefficients in a typical photo are already 0 after quantization — often 70-90% of them. So the *usable* count is much smaller than the theoretical maximum:
+
+```
+if ~80% of AC coefficients are 0 or ±1:
+usable ≈ 258,048 × 0.20 ≈ 51,600 bits ≈ 6,450 bytes
+```
+
+Compare this to Lecture 1's capacity for a similarly-sized image (roughly 3x more bits available in raw LSB, since every pixel/channel qualifies, not just non-zero mid-frequency AC coefficients). This is the core **trade-off of DCT-domain steganography**: lower capacity than spatial LSB, in exchange for surviving JPEG's own compression pipeline and being harder to detect with simple statistical tests.
+
+Algorithm-specific effects on capacity:
+
+- **F5's matrix encoding** further *reduces* raw bits-per-coefficient-changed (that's the point — fewer changes for the same payload), but the number of coefficients it can read a bit from is the same pool as JSteg.
+- **OutGuess** roughly halves usable capacity versus JSteg, since half the non-zero, non-one coefficients are reserved for the histogram-correction phase rather than data.
+
 ## Fundamental Problem of JSteg
 
 JSteg assumes:
@@ -445,6 +486,47 @@ The insight: JSteg is caught because embedding changes the histogram. If you *re
 - The correction phase swaps a matching number of *unused* coefficients in the opposite direction.
 - Net effect: the first-order histogram is (approximately) restored.
 
+### OutGuess-Style Embedding (Simplified)
+
+```python
+import random
+
+def embed_outguess(dct_coeffs, message_bits, key):
+    flat = dct_coeffs.flatten()
+    usable = [i for i, c in enumerate(flat) if c != 0 and abs(c) != 1]
+
+    rng = random.Random(key)
+    rng.shuffle(usable)  # pseudo-random order, driven by the key
+
+    embed_positions = usable[:len(message_bits)]
+    reserve_positions = usable[len(message_bits):]  # left for correction phase
+
+    original_hist_delta = {}  # tracks how embedding shifted the histogram
+
+    # --- Embedding phase ---
+    for pos, bit in zip(embed_positions, message_bits):
+        coeff = int(flat[pos])
+        if (coeff & 1) != int(bit):
+            old_val = coeff
+            new_val = coeff - 1 if coeff > 0 else coeff + 1
+            flat[pos] = new_val
+            original_hist_delta[old_val] = original_hist_delta.get(old_val, 0) - 1
+            original_hist_delta[new_val] = original_hist_delta.get(new_val, 0) + 1
+
+    # --- Correction phase (sketch) ---
+    # For each histogram value pushed off balance, adjust an unused
+    # reserve coefficient in the opposite direction to restore the count.
+    for value, delta in original_hist_delta.items():
+        while delta > 0 and reserve_positions:
+            pos = reserve_positions.pop()
+            flat[pos] = flat[pos] - 1 if flat[pos] > 0 else flat[pos] + 1
+            delta -= 1
+
+    return flat.reshape(dct_coeffs.shape)
+```
+
+> This sketch omits real OutGuess's careful selection rules for which correction to apply where, but shows the two-phase structure: embed pseudo-randomly, then spend the remaining unused coefficients repairing the histogram.
+
 ### Trade-off
 
 Preserving the histogram costs capacity — roughly half the usable coefficients are reserved for corrections rather than data. So OutGuess hides **less** than JSteg for the same image, in exchange for resisting first-order statistical attacks.
@@ -460,3 +542,45 @@ OutGuess preserves the *first-order* histogram but not higher-order statistics (
 | **JSteg**   | LSB of quantized DCT coeffs | visual inspection | chi-square, ML |
 | **F5**      | decrement + matrix encoding | chi-square | SRM / CNN steganalysis |
 | **OutGuess**| histogram correction | first-order histogram attacks | higher-order / ML steganalysis |
+
+## Practice Questions
+
+**1. Why does DCT-based steganography embed in the AC coefficients of an 8x8 block instead of the DC coefficient?**
+
+<details>
+<summary>Answer</summary>
+
+The DC coefficient carries the average intensity of the whole 8x8 block — it holds a large share of the block's total energy (energy compaction). Modifying it causes a visible, block-wide brightness shift, unlike a small AC coefficient change which is masked by local detail. That's why every algorithm in this lecture (JSteg, F5, OutGuess) explicitly skips the DC coefficient.
+</details>
+
+**2. A DCT coefficient has value `-1`. JSteg is trying to embed a `0` bit there (recall: JSteg's bit rule is `coeff & 1`). What does JSteg do?**
+
+<details>
+<summary>Answer</summary>
+
+Nothing — this coefficient is skipped entirely. JSteg's rule explicitly avoids coefficients equal to ±1, because changing a ±1 coefficient toward 0 would make it a zero coefficient, which changes the count of zero-value coefficients and is a strong, well-known statistical giveaway (used by histogram-based steganalysis).
+</details>
+
+**3. A DCT coefficient has value `+3` and F5 needs to embed a `0` bit (F5's bit rule is `|coeff| & 1`, and 3 is odd → currently encodes `1`). What does F5 do, and what is the result?**
+
+<details>
+<summary>Answer</summary>
+
+The bit doesn't match (currently 1, want 0), so F5 moves the coefficient one step toward zero: `+3 → +2`. Since the result isn't 0, there's no shrinkage — the bit is embedded and F5 moves to the next message bit. (Contrast with JSteg, which would instead force the LSB directly, e.g. `+3 → +2` too in this case, but by *overwriting* rather than always moving toward zero — the difference shows up when the coefficient is negative.)
+</details>
+
+**4. Why does OutGuess have roughly half the capacity of JSteg on the same image?**
+
+<details>
+<summary>Answer</summary>
+
+OutGuess splits its usable (non-zero, non-±1) coefficients into two pools: one for embedding the actual message, and one held in reserve for the correction phase, which restores the first-order histogram afterward. Reserving that second pool for corrections rather than data roughly halves the coefficients actually available to carry payload bits.
+</details>
+
+**5. You run a chi-square attack (Lecture 3) on a JPEG and get a low p-value (histogram looks natural, not flattened). Can you conclude the image is clean?**
+
+<details>
+<summary>Answer</summary>
+
+No. A chi-square attack only detects the specific "pair equalization" signature left by LSB-overwrite methods like JSteg. F5 (decrement-toward-zero) and OutGuess (histogram correction) are both specifically designed to leave a normal-looking first-order histogram, so this test alone would miss them. You'd need a different test (e.g. F5's category attack, or a higher-order/blind detector like SRM) to check for those.
+</details>
